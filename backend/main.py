@@ -24,6 +24,7 @@ from backend.crud import (
     obtener_documento,
     obtener_documento_por_numero,
     obtener_tarifa_por_codigo,
+    eliminar_cliente_por_nombre,
     upsert_cliente,
     upsert_tarifa,
 )
@@ -193,6 +194,11 @@ def get_cliente_by_name(nombre: str, db: Session = Depends(get_db)):
 def post_cliente(payload: ClienteIn, db: Session = Depends(get_db)):
     cliente = upsert_cliente(db, payload.nombre, payload.telefono, payload.rnc, payload.direccion)
     return serializar_cliente(cliente)
+
+
+@app.delete("/clientes/by-name/{nombre}")
+def delete_cliente_by_name(nombre: str, db: Session = Depends(get_db)):
+    return eliminar_cliente_por_nombre(db, nombre)
 
 
 @app.post("/tarifas")

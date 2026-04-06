@@ -15,8 +15,14 @@ import subprocess
 import sys
 import shutil
 import json
+import ssl
 from urllib.parse import quote, urlencode
 from urllib.request import urlopen, Request
+
+try:
+    import certifi
+except Exception:
+    certifi = None
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -39,7 +45,28 @@ def cargar_env_simple(path):
         pass
 
 
-cargar_env_simple(os.path.join(os.getcwd(), ".env.cloud"))
+def cargar_env_cloud():
+    rutas = []
+
+    rutas.append(os.path.join(os.getcwd(), ".env.cloud"))
+
+    if getattr(sys, "frozen", False):
+        rutas.append(os.path.join(os.path.dirname(sys.executable), ".env.cloud"))
+    else:
+        rutas.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.cloud"))
+
+    rutas.append(os.path.join(APP_SUPPORT_DIR, ".env.cloud"))
+
+    vistas = set()
+    for ruta in rutas:
+        ruta_normalizada = os.path.abspath(ruta)
+        if ruta_normalizada in vistas:
+            continue
+        vistas.add(ruta_normalizada)
+        cargar_env_simple(ruta_normalizada)
+
+
+cargar_env_cloud()
 
 
 def ruta_recurso(nombre):
@@ -68,8 +95,18 @@ NEGOCIO_TELEFONO = "809 569 2000"
 NEGOCIO_RNC = "132-23323-9"
 NEGOCIO_INSTAGRAM = "@enmarcadospfrd"
 REFERENCIA_COBRO_AUTO = "Abono factura"
-DATA_MODE = os.getenv("DATA_MODE", "local").strip().lower()
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+DEFAULT_API_BASE_URL = "https://web-production-e749b.up.railway.app"
+DATA_MODE = os.getenv("DATA_MODE", "cloud").strip().lower()
+API_BASE_URL = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL).rstrip("/")
+
+
+def contexto_ssl_app():
+    if certifi is not None:
+        try:
+            return ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+    return ssl.create_default_context()
 
 
 # =========================
@@ -83,7 +120,7 @@ def limpiar_nombre_archivo(texto: str) -> str:
 
 
 def usar_backend_nube():
-    return DATA_MODE == "cloud" and bool(API_BASE_URL)
+    return True
 
 
 def api_get_json(path, params=None):
@@ -92,7 +129,7 @@ def api_get_json(path, params=None):
     query = f"?{urlencode(params)}" if params else ""
     url = f"{API_BASE_URL}{path}{query}"
     req = Request(url, headers={"Accept": "application/json"})
-    with urlopen(req, timeout=8) as resp:
+    with urlopen(req, timeout=8, context=contexto_ssl_app()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -102,7 +139,7 @@ def api_send_json(method, path, payload):
     url = f"{API_BASE_URL}{path}"
     data = json.dumps(payload).encode("utf-8")
     req = Request(url, data=data, headers={"Content-Type": "application/json", "Accept": "application/json"}, method=method)
-    with urlopen(req, timeout=12) as resp:
+    with urlopen(req, timeout=12, context=contexto_ssl_app()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -119,7 +156,7 @@ def api_delete_json(path):
         return None
     url = f"{API_BASE_URL}{path}"
     req = Request(url, method="DELETE", headers={"Accept": "application/json"})
-    with urlopen(req, timeout=12) as resp:
+    with urlopen(req, timeout=12, context=contexto_ssl_app()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -269,6 +306,9 @@ def imprimir_archivo_generado(ruta):
         return False, "El archivo no existe."
 
     try:
+        if os.name == "nt":
+            os.startfile(ruta, "print")
+            return True, "Documento enviado a la impresora."
         resultado = subprocess.run(["lp", ruta], capture_output=True, text=True)
         if resultado.returncode == 0:
             return True, (resultado.stdout or "Documento enviado a la impresora.").strip()
@@ -1196,18 +1236,16 @@ def guardar_cliente_db(nombre, telefono, rnc, direccion):
 
 def obtener_cliente_por_nombre(nombre):
     if usar_backend_nube():
-        try:
-            data = api_get_json(f"/clientes/by-name/{quote(nombre)}")
-            if data and not data.get("error"):
-                return (
-                    data.get("id"),
-                    data.get("nombre"),
-                    data.get("telefono"),
-                    data.get("rnc"),
-                    data.get("direccion"),
-                )
-        except Exception:
-            pass
+        data = api_get_json(f"/clientes/by-name/{quote(nombre)}")
+        if data and not data.get("error"):
+            return (
+                data.get("id"),
+                data.get("nombre"),
+                data.get("telefono"),
+                data.get("rnc"),
+                data.get("direccion"),
+            )
+        return None
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1222,21 +1260,19 @@ def obtener_cliente_por_nombre(nombre):
 
 def obtener_todos_clientes():
     if usar_backend_nube():
-        try:
-            data = api_get_json("/clientes")
-            if isinstance(data, list):
-                return [
-                    (
-                        item.get("id"),
-                        item.get("nombre"),
-                        item.get("telefono"),
-                        item.get("rnc"),
-                        item.get("direccion"),
-                    )
-                    for item in data
-                ]
-        except Exception:
-            pass
+        data = api_get_json("/clientes")
+        if isinstance(data, list):
+            return [
+                (
+                    item.get("id"),
+                    item.get("nombre"),
+                    item.get("telefono"),
+                    item.get("rnc"),
+                    item.get("direccion"),
+                )
+                for item in data
+            ]
+        return []
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1249,6 +1285,9 @@ def obtener_todos_clientes():
     return filas
 
 def eliminar_cliente_por_nombre(nombre):
+    if usar_backend_nube():
+        data = api_delete_json(f"/clientes/by-name/{quote(nombre)}")
+        return 1 if data and data.get("ok") else 0
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM clientes WHERE nombre = ?", (nombre,))
@@ -1259,6 +1298,11 @@ def eliminar_cliente_por_nombre(nombre):
 
 
 def borrar_todos_los_clientes():
+    if usar_backend_nube():
+        total = 0
+        for _, nombre, _, _, _ in obtener_todos_clientes():
+            total += eliminar_cliente_por_nombre(nombre)
+        return total
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM clientes")
@@ -1343,23 +1387,6 @@ def importar_clientes_desde_excel(ruta="clientes.xlsx"):
             saltados += 1
 
     return insertados, saltados, errores
-
-def eliminar_cliente_por_nombre(nombre):
-    conn = conectar_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM clientes WHERE nombre = ?", (nombre,))
-    cambios = cur.rowcount
-    conn.commit()
-    conn.close()
-    return cambios
-
-
-def borrar_todos_los_clientes():
-    conn = conectar_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM clientes")
-    conn.commit()
-    conn.close()
 
 # =========================
 # TARIFAS
@@ -1504,17 +1531,15 @@ def importar_tarifas_desde_txt(ruta_archivo="tarifas.txt"):
 
 def obtener_tarifa_por_codigo(codigo):
     if usar_backend_nube():
-        try:
-            data = api_get_json(f"/tarifas/{int(codigo)}")
-            if data and not data.get("error"):
-                return (
-                    data.get("codigo"),
-                    data.get("nombre"),
-                    data.get("precio", 0),
-                    data.get("extra", 0),
-                )
-        except Exception:
-            pass
+        data = api_get_json(f"/tarifas/{int(codigo)}")
+        if data and not data.get("error"):
+            return (
+                data.get("codigo"),
+                data.get("nombre"),
+                data.get("precio", 0),
+                data.get("extra", 0),
+            )
+        return None
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1542,20 +1567,18 @@ def eliminar_tarifa_por_codigo(codigo):
 
 def obtener_todas_tarifas():
     if usar_backend_nube():
-        try:
-            data = api_get_json("/tarifas")
-            if isinstance(data, list):
-                return [
-                    (
-                        item.get("codigo"),
-                        item.get("nombre"),
-                        item.get("precio", 0),
-                        item.get("extra", 0),
-                    )
-                    for item in data
-                ]
-        except Exception:
-            pass
+        data = api_get_json("/tarifas")
+        if isinstance(data, list):
+            return [
+                (
+                    item.get("codigo"),
+                    item.get("nombre"),
+                    item.get("precio", 0),
+                    item.get("extra", 0),
+                )
+                for item in data
+            ]
+        return []
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1643,31 +1666,29 @@ def crear_documento_db(tipo, cliente_id, fecha, fecha_entrega=""):
 
 def obtener_documento(documento_id):
     if usar_backend_nube():
-        try:
-            data = api_get_json(f"/documentos/{documento_id}")
-            if data and not data.get("error"):
-                cliente = data.get("cliente") or {}
-                return (
-                    data.get("id"),
-                    data.get("tipo"),
-                    data.get("numero_doc"),
-                    data.get("cliente_id"),
-                    cliente.get("nombre"),
-                    cliente.get("telefono"),
-                    cliente.get("rnc"),
-                    cliente.get("direccion"),
-                    data.get("fecha"),
-                    data.get("subtotal", 0),
-                    data.get("descuento", 0),
-                    data.get("itbis", 0),
-                    data.get("total_final", 0),
-                    1 if data.get("cerrado") else 0,
-                    data.get("metodo_pago"),
-                    1 if data.get("retirado") else 0,
-                    data.get("fecha_entrega", ""),
-                )
-        except Exception:
-            pass
+        data = api_get_json(f"/documentos/{documento_id}")
+        if data and not data.get("error"):
+            cliente = data.get("cliente") or {}
+            return (
+                data.get("id"),
+                data.get("tipo"),
+                data.get("numero_doc"),
+                data.get("cliente_id"),
+                cliente.get("nombre"),
+                cliente.get("telefono"),
+                cliente.get("rnc"),
+                cliente.get("direccion"),
+                data.get("fecha"),
+                data.get("subtotal", 0),
+                data.get("descuento", 0),
+                data.get("itbis", 0),
+                data.get("total_final", 0),
+                1 if data.get("cerrado") else 0,
+                data.get("metodo_pago"),
+                1 if data.get("retirado") else 0,
+                data.get("fecha_entrega", ""),
+            )
+        return None
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1685,31 +1706,29 @@ def obtener_documento(documento_id):
 
 def obtener_documento_por_numero(numero_doc):
     if usar_backend_nube():
-        try:
-            data = api_get_json(f"/documentos/by-number/{numero_doc}")
-            if data and not data.get("error"):
-                cliente = data.get("cliente") or {}
-                return (
-                    data.get("id"),
-                    data.get("tipo"),
-                    data.get("numero_doc"),
-                    data.get("cliente_id"),
-                    cliente.get("nombre"),
-                    cliente.get("telefono"),
-                    cliente.get("rnc"),
-                    cliente.get("direccion"),
-                    data.get("fecha"),
-                    data.get("subtotal", 0),
-                    data.get("descuento", 0),
-                    data.get("itbis", 0),
-                    data.get("total_final", 0),
-                    1 if data.get("cerrado") else 0,
-                    data.get("metodo_pago"),
-                    1 if data.get("retirado") else 0,
-                    data.get("fecha_entrega", ""),
-                )
-        except Exception:
-            pass
+        data = api_get_json(f"/documentos/by-number/{numero_doc}")
+        if data and not data.get("error"):
+            cliente = data.get("cliente") or {}
+            return (
+                data.get("id"),
+                data.get("tipo"),
+                data.get("numero_doc"),
+                data.get("cliente_id"),
+                cliente.get("nombre"),
+                cliente.get("telefono"),
+                cliente.get("rnc"),
+                cliente.get("direccion"),
+                data.get("fecha"),
+                data.get("subtotal", 0),
+                data.get("descuento", 0),
+                data.get("itbis", 0),
+                data.get("total_final", 0),
+                1 if data.get("cerrado") else 0,
+                data.get("metodo_pago"),
+                1 if data.get("retirado") else 0,
+                data.get("fecha_entrega", ""),
+            )
+        return None
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1728,26 +1747,24 @@ def obtener_documento_por_numero(numero_doc):
 
 def obtener_todos_los_documentos(filtro=""):
     if usar_backend_nube():
-        try:
-            data = api_get_json("/documentos", params={"filtro": filtro, "limit": 300})
-            if isinstance(data, list):
-                filas = []
-                for item in data:
-                    cliente = item.get("cliente") or {}
-                    filas.append(
-                        (
-                            item.get("id"),
-                            item.get("tipo"),
-                            item.get("numero_doc"),
-                            cliente.get("nombre"),
-                            item.get("fecha"),
-                            item.get("total_final", 0),
-                            1 if item.get("cerrado") else 0,
-                        )
+        data = api_get_json("/documentos", params={"filtro": filtro, "limit": 300})
+        if isinstance(data, list):
+            filas = []
+            for item in data:
+                cliente = item.get("cliente") or {}
+                filas.append(
+                    (
+                        item.get("id"),
+                        item.get("tipo"),
+                        item.get("numero_doc"),
+                        cliente.get("nombre"),
+                        item.get("fecha"),
+                        item.get("total_final", 0),
+                        1 if item.get("cerrado") else 0,
                     )
-                return filas
-        except Exception:
-            pass
+                )
+            return filas
+        return []
     conn = conectar_db()
     cur = conn.cursor()
 
@@ -2149,25 +2166,22 @@ def obtener_todos_los_cobros(filtro=""):
 
 def obtener_resumen_documentos_cobro(filtro=""):
     if usar_backend_nube():
-        try:
-            docs = api_get_json("/documentos", params={"filtro": filtro, "limit": 300}) or []
-            filas = []
-            for item in docs:
-                cliente = item.get("cliente") or {}
-                cobrado = sum(float(c.get("monto", 0) or 0) for c in item.get("cobros", []))
-                filas.append((
-                    item.get("id"),
-                    item.get("numero_doc"),
-                    cliente.get("nombre"),
-                    item.get("fecha"),
-                    item.get("total_final", 0),
-                    item.get("metodo_pago"),
-                    1 if item.get("retirado") else 0,
-                    cobrado,
-                ))
-            return filas
-        except Exception:
-            pass
+        docs = api_get_json("/documentos", params={"filtro": filtro, "limit": 300}) or []
+        filas = []
+        for item in docs:
+            cliente = item.get("cliente") or {}
+            cobrado = sum(float(c.get("monto", 0) or 0) for c in item.get("cobros", []))
+            filas.append((
+                item.get("id"),
+                item.get("numero_doc"),
+                cliente.get("nombre"),
+                item.get("fecha"),
+                item.get("total_final", 0),
+                item.get("metodo_pago"),
+                1 if item.get("retirado") else 0,
+                cobrado,
+            ))
+        return filas
     conn = conectar_db()
     cur = conn.cursor()
     filtro = f"%{(filtro or '').strip().lower()}%"
@@ -2396,6 +2410,7 @@ class App(ctk.CTk):
 
         self.documento_actual_id = None
         self.tipo_actual = None
+        self.pagina_actual = "facturacion"
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -2439,6 +2454,10 @@ class App(ctk.CTk):
             row=7, column=0, padx=20, pady=8, sticky="ew"
         )
 
+        ctk.CTkButton(self.menu, text="RECARGAR", command=self.recargar_actual).grid(
+            row=8, column=0, padx=20, pady=(20, 8), sticky="ew"
+        )
+
         # área de contenido
         self.content = ctk.CTkFrame(self, corner_radius=0)
         self.content.grid(row=0, column=1, sticky="nsew")
@@ -2465,6 +2484,7 @@ class App(ctk.CTk):
         self.ir_facturacion()
 
     def ir_clientes(self):
+        self.pagina_actual = "clientes"
         self.pagina_clientes.cargar_lista_clientes()
         self.pagina_clientes.tkraise()
 
@@ -2479,27 +2499,43 @@ class App(ctk.CTk):
             messagebox.showerror("Acceso denegado", "Código incorrecto.")
             return
 
+        self.pagina_actual = "tarifas"
         self.pagina_tarifas.cargar_lista_tarifas()
         self.pagina_tarifas.tkraise()
 
     def ir_orden(self):
+        self.pagina_actual = "orden"
         self.pagina_orden.refrescar_desde_facturacion()
         self.pagina_orden.tkraise()
 
     def ir_facturacion(self):
+        self.pagina_actual = "facturacion"
         self.pagina_facturacion.refrescar()
         self.pagina_facturacion.tkraise()
 
     def ir_historial(self):
+        self.pagina_actual = "historial"
         self.pagina_historial.cargar_documentos()
         self.pagina_historial.tkraise()
 
     def ir_cobros(self):
+        self.pagina_actual = "cobros"
         self.pagina_cobros.cargar_cobros()
         self.pagina_cobros.tkraise()
 
     def ir_backup(self):
+        self.pagina_actual = "backup"
         self.pagina_backup.tkraise()
+
+    def recargar_actual(self):
+        if self.pagina_actual == "clientes":
+            self.pagina_clientes.cargar_lista_clientes(self.pagina_clientes.buscar_entry.get().strip())
+        elif self.pagina_actual == "tarifas":
+            self.pagina_tarifas.cargar_lista_tarifas(self.pagina_tarifas.buscar_entry.get().strip())
+        elif self.pagina_actual == "historial":
+            self.pagina_historial.cargar_documentos(self.pagina_historial.buscar_entry.get().strip())
+        elif self.pagina_actual == "cobros":
+            self.pagina_cobros.cargar_cobros(self.pagina_cobros.buscar_entry.get().strip())
 
 # =========================
 # CLIENTES
@@ -2631,10 +2667,13 @@ class PaginaClientes(ctk.CTkFrame):
             messagebox.showerror("Error", "Debes escribir el nombre del cliente.")
             return
 
-        guardar_cliente_db(nombre, telefono, rnc, direccion)
-        self.cargar_lista_clientes()
-        messagebox.showinfo("Éxito", "Cliente guardado o actualizado.")
-        self.limpiar_formulario()
+        try:
+            guardar_cliente_db(nombre, telefono, rnc, direccion)
+            self.cargar_lista_clientes()
+            messagebox.showinfo("Éxito", "Cliente guardado o actualizado.")
+            self.limpiar_formulario()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar el cliente.\n\n{e}")
 
     def cargar_por_nombre(self, silencioso=False):
         nombre = self.nombre.get().strip()
@@ -2701,14 +2740,17 @@ class PaginaClientes(ctk.CTkFrame):
         messagebox.showinfo("Listo", "Todos los clientes fueron eliminados.")
 
     def importar_excel(self):
-        insertados, saltados, errores = importar_clientes_desde_excel("clientes.xlsx")
-        self.cargar_lista_clientes()
+        try:
+            insertados, saltados, errores = importar_clientes_desde_excel("clientes.xlsx")
+            self.cargar_lista_clientes()
 
-        mensaje = f"Importados: {insertados}\nSaltados: {saltados}"
-        if errores:
-            mensaje += "\n\nErrores:\n" + "\n".join(errores[:10])
+            mensaje = f"Importados: {insertados}\nSaltados: {saltados}"
+            if errores:
+                mensaje += "\n\nErrores:\n" + "\n".join(errores[:10])
 
-        messagebox.showinfo("Importación Excel", mensaje)
+            messagebox.showinfo("Importación Excel", mensaje)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo importar clientes.\n\n{e}")
 
     def cargar_lista_clientes(self, filtro=""):
         for item in self.lista_clientes.get_children():
@@ -2751,16 +2793,29 @@ class PaginaClientes(ctk.CTkFrame):
         if not respuesta:
             return
 
-        conn = conectar_db()
-        cur = conn.cursor()
+        eliminados = 0
+        errores = []
 
         for nombre in seleccionados:
-            cur.execute("DELETE FROM clientes WHERE nombre = ?", (nombre,))
-
-        conn.commit()
-        conn.close()
+            try:
+                cambios = eliminar_cliente_por_nombre(nombre)
+                if cambios:
+                    eliminados += 1
+                else:
+                    errores.append(nombre)
+            except Exception:
+                errores.append(nombre)
 
         self.cargar_lista_clientes()
+
+        if errores:
+            messagebox.showwarning(
+                "Resultado",
+                f"Eliminados: {eliminados}\nNo se pudieron eliminar: {len(errores)}\n\n"
+                + "\n".join(errores[:10])
+            )
+            return
+
         messagebox.showinfo("Listo", "Clientes eliminados correctamente.")
 
 # =========================
@@ -2897,6 +2952,8 @@ class PaginaTarifas(ctk.CTkFrame):
             self.limpiar_formulario()
         except ValueError:
             messagebox.showerror("Error", "Código, precio y extra deben ser numéricos.")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar la tarifa.\n\n{e}")
 
     def cargar_por_codigo(self, silencioso=False):
         try:
@@ -3010,16 +3067,29 @@ class PaginaTarifas(ctk.CTkFrame):
         if not respuesta:
             return
 
-        conn = conectar_db()
-        cur = conn.cursor()
+        eliminadas = 0
+        errores = []
 
         for codigo in seleccionadas:
-            cur.execute("DELETE FROM tarifas WHERE codigo = ?", (codigo,))
-
-        conn.commit()
-        conn.close()
+            try:
+                cambios = eliminar_tarifa_por_codigo(codigo)
+                if cambios:
+                    eliminadas += 1
+                else:
+                    errores.append(str(codigo))
+            except Exception:
+                errores.append(str(codigo))
 
         self.cargar_lista_tarifas()
+
+        if errores:
+            messagebox.showwarning(
+                "Resultado",
+                f"Eliminadas: {eliminadas}\nNo se pudieron eliminar: {len(errores)}\n\n"
+                + "\n".join(errores[:10])
+            )
+            return
+
         messagebox.showinfo("Listo", "Tarifas eliminadas correctamente.")
 # =========================
 # ORDEN
@@ -4446,12 +4516,8 @@ class PaginaHistorial(ctk.CTkFrame):
         self.buscar_entry.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
         self.buscar_entry.bind("<KeyRelease>", self.filtrar)
 
-        ctk.CTkButton(top, text="Recargar", command=self.cargar_documentos).grid(
-            row=0, column=2, padx=8, pady=8
-        )
-
         ctk.CTkButton(top, text="Ver detalle", command=self.ver_detalle).grid(
-            row=0, column=3, padx=8, pady=8
+            row=0, column=2, padx=8, pady=8
         )
 
         self.lista = ctk.CTkTextbox(self, height=500)
@@ -4768,11 +4834,10 @@ class PaginaCobros(ctk.CTkFrame):
         self.buscar_entry.grid(row=0, column=1, padx=8, pady=8, sticky="ew")
         self.buscar_entry.bind("<KeyRelease>", self.filtrar)
 
-        ctk.CTkButton(top, text="Recargar", command=self.cargar_cobros).grid(row=0, column=2, padx=8, pady=8)
-        ctk.CTkLabel(top, text="ID o número:").grid(row=0, column=3, padx=(20, 8), pady=8, sticky="e")
+        ctk.CTkLabel(top, text="ID o número:").grid(row=0, column=2, padx=(20, 8), pady=8, sticky="e")
         self.doc_entry = ctk.CTkEntry(top, placeholder_text="ID o No. factura")
-        self.doc_entry.grid(row=0, column=4, padx=8, pady=8, sticky="ew")
-        ctk.CTkButton(top, text="Cargar factura", command=self.cargar_factura).grid(row=0, column=5, padx=8, pady=8)
+        self.doc_entry.grid(row=0, column=3, padx=8, pady=8, sticky="ew")
+        ctk.CTkButton(top, text="Cargar factura", command=self.cargar_factura).grid(row=0, column=4, padx=8, pady=8)
 
         resumen = ctk.CTkFrame(self, fg_color="white", border_width=1, border_color=COLOR_BORDE, corner_radius=18)
         resumen.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="ew")

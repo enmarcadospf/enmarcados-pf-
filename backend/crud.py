@@ -1,7 +1,24 @@
-from sqlalchemy import cast, select, String, or_
+from sqlalchemy import cast, select, String, or_, text
 from sqlalchemy.orm import Session, selectinload
 
 from backend import models
+
+
+def _sync_sequence(db: Session, table_name: str, pk_name: str = "id"):
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        text(
+            f"""
+            SELECT setval(
+                pg_get_serial_sequence('{table_name}', '{pk_name}'),
+                COALESCE((SELECT MAX({pk_name}) FROM {table_name}), 0) + 1,
+                false
+            )
+            """
+        )
+    )
 
 
 def listar_clientes(db: Session):
@@ -22,6 +39,17 @@ def obtener_tarifa_por_codigo(db: Session, codigo: int):
 def obtener_cliente_por_nombre(db: Session, nombre: str):
     stmt = select(models.Cliente).where(models.Cliente.nombre == nombre)
     return db.scalars(stmt).first()
+
+
+def eliminar_cliente_por_nombre(db: Session, nombre: str):
+    cliente = obtener_cliente_por_nombre(db, nombre)
+    if not cliente:
+        return {"ok": False, "error": "Cliente no encontrado"}
+    if cliente.documentos:
+        return {"ok": False, "error": "El cliente tiene documentos asociados"}
+    db.delete(cliente)
+    db.commit()
+    return {"ok": True}
 
 
 def listar_documentos(db: Session, limit: int = 100):
@@ -92,6 +120,7 @@ def upsert_cliente(db: Session, nombre: str, telefono: str | None, rnc: str | No
         cliente.rnc = rnc
         cliente.direccion = direccion
     else:
+        _sync_sequence(db, "clientes")
         cliente = models.Cliente(nombre=nombre, telefono=telefono, rnc=rnc, direccion=direccion)
         db.add(cliente)
     db.commit()
@@ -120,6 +149,7 @@ def siguiente_numero_documento(db: Session, tipo: str) -> int:
 
 
 def crear_documento(db: Session, tipo: str, cliente_id: int, fecha: str, fecha_entrega: str = "", numero_doc: int | None = None):
+    _sync_sequence(db, "documentos")
     documento = models.Documento(
         tipo=tipo,
         numero_doc=numero_doc or siguiente_numero_documento(db, tipo),
@@ -146,6 +176,7 @@ def actualizar_documento(db: Session, documento_id: int, **campos):
 
 
 def crear_orden(db: Session, documento_id: int, a_enmarcar: str, notas: str, ancho: float, largo: float, total_orden: float):
+    _sync_sequence(db, "ordenes")
     orden = models.Orden(
         documento_id=documento_id,
         a_enmarcar=a_enmarcar,
@@ -161,6 +192,7 @@ def crear_orden(db: Session, documento_id: int, a_enmarcar: str, notas: str, anc
 
 
 def crear_detalle_orden(db: Session, **payload):
+    _sync_sequence(db, "orden_detalles")
     detalle = models.OrdenDetalle(**payload)
     db.add(detalle)
     db.commit()
@@ -169,6 +201,7 @@ def crear_detalle_orden(db: Session, **payload):
 
 
 def crear_cobro(db: Session, **payload):
+    _sync_sequence(db, "cobros")
     cobro = models.Cobro(**payload)
     db.add(cobro)
     db.commit()
