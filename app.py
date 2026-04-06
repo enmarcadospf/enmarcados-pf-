@@ -161,6 +161,12 @@ def carpeta_backups():
     return ruta
 
 
+def carpeta_backups_nube():
+    ruta = os.path.join(carpeta_datos_app(), "backup_nube")
+    os.makedirs(ruta, exist_ok=True)
+    return ruta
+
+
 def guardar_copia_backup(ruta_archivo):
     if not ruta_archivo or not os.path.exists(ruta_archivo):
         return None
@@ -171,7 +177,8 @@ def guardar_copia_backup(ruta_archivo):
 
 def crear_backup_y_reiniciar_facturacion():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    carpeta_destino = os.path.join(carpeta_backups(), timestamp)
+    carpeta_base = carpeta_backups_nube() if usar_backend_nube() else carpeta_backups()
+    carpeta_destino = os.path.join(carpeta_base, timestamp)
     pdfs_generados_destino = os.path.join(carpeta_destino, "documentos_generados")
     pdfs_respaldo_destino = os.path.join(carpeta_destino, "facturaspf realizadas")
     os.makedirs(pdfs_generados_destino, exist_ok=True)
@@ -180,6 +187,18 @@ def crear_backup_y_reiniciar_facturacion():
     # Copia completa de la base antes de limpiar.
     if os.path.exists(DB_NAME):
         shutil.copy2(DB_NAME, os.path.join(carpeta_destino, DB_NAME))
+
+    respaldo_nube = None
+    if usar_backend_nube():
+        respaldo_nube = {
+            "exportado_en": datetime.now().isoformat(timespec="seconds"),
+            "api_base_url": API_BASE_URL,
+            "clientes": api_get_json("/clientes") or [],
+            "tarifas": api_get_json("/tarifas") or [],
+            "documentos": api_get_json("/documentos", params={"limit": 5000}) or [],
+        }
+        with open(os.path.join(carpeta_destino, "respaldo_nube.json"), "w", encoding="utf-8") as fh:
+            json.dump(respaldo_nube, fh, ensure_ascii=False, indent=2)
 
     def mover_archivos(origen, destino):
         movidos = 0
@@ -212,10 +231,17 @@ def crear_backup_y_reiniciar_facturacion():
     conn.commit()
     conn.close()
 
+    borrados_nube = 0
+    if usar_backend_nube():
+        resultado_nube = api_delete_json("/documentos") or {}
+        borrados_nube = int(resultado_nube.get("borrados") or 0)
+
     return {
         "carpeta": carpeta_destino,
         "documentos_generados": movidos_generados,
         "respaldos_pdf": movidos_respaldo,
+        "borrados_nube": borrados_nube,
+        "respaldo_nube": bool(respaldo_nube),
     }
 
 
@@ -5082,11 +5108,12 @@ class PaginaBackup(ctk.CTkFrame):
 
         texto = (
             "Este proceso hace lo siguiente:\n\n"
-            "1. Crea una carpeta dentro de 'backup' con la fecha y la hora.\n"
+            "1. Crea una carpeta de respaldo con la fecha y la hora.\n"
             "2. Guarda una copia de la base de datos actual.\n"
             "3. Mueve los PDFs de 'documentos_generados' y 'facturaspf realizadas'.\n"
             "4. Borra documentos, ordenes, detalles y cobros.\n"
             "5. Reinicia los ID y la numeracion de facturas.\n\n"
+            "Si estas en modo nube, tambien guarda un respaldo JSON de Railway y limpia los documentos en Railway.\n\n"
             "Clientes y tarifas se conservan."
         )
         ctk.CTkLabel(
@@ -5110,7 +5137,8 @@ class PaginaBackup(ctk.CTkFrame):
     def ejecutar_backup(self):
         confirmar = messagebox.askyesno(
             "Confirmar backup",
-            "Se moveran los archivos actuales al backup y se borraran documentos, ordenes y cobros del sistema.\n\n¿Deseas continuar?"
+            "Se moveran los archivos actuales al backup y se borraran documentos, ordenes y cobros del sistema.\n"
+            "Si estas en modo nube, tambien se eliminaran en Railway.\n\n¿Deseas continuar?"
         )
         if not confirmar:
             return
@@ -5132,7 +5160,8 @@ class PaginaBackup(ctk.CTkFrame):
             "Se completo el respaldo correctamente.\n\n"
             f"Carpeta: {resultado['carpeta']}\n"
             f"PDFs movidos desde documentos_generados: {resultado['documentos_generados']}\n"
-            f"PDFs movidos desde facturaspf realizadas: {resultado['respaldos_pdf']}"
+            f"PDFs movidos desde facturaspf realizadas: {resultado['respaldos_pdf']}\n"
+            f"Documentos borrados en Railway: {resultado['borrados_nube']}"
         )
 
 if __name__ == "__main__":

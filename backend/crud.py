@@ -197,6 +197,15 @@ def eliminar_documento(db: Session, documento_id: int) -> bool:
     return True
 
 
+def eliminar_todos_documentos(db: Session) -> int:
+    documentos = db.scalars(select(models.Documento)).all()
+    total = len(documentos)
+    for documento in documentos:
+        db.delete(documento)
+    db.commit()
+    return total
+
+
 def eliminar_cobro(db: Session, cobro_id: int) -> bool:
     cobro = db.get(models.Cobro, cobro_id)
     if not cobro:

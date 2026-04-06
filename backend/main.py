@@ -11,6 +11,7 @@ from backend.crud import (
     actualizar_documento,
     eliminar_cobro,
     eliminar_documento,
+    eliminar_todos_documentos,
     eliminar_tarifa,
     eliminar_todas_tarifas,
     listar_clientes,
@@ -275,6 +276,12 @@ def put_cobro(cobro_id: int, payload: CobroUpdateIn, db: Session = Depends(get_d
 def delete_documento(documento_id: int, db: Session = Depends(get_db)):
     ok = eliminar_documento(db, documento_id)
     return {"ok": ok}
+
+
+@app.delete("/documentos")
+def delete_todos_documentos(db: Session = Depends(get_db)):
+    borrados = eliminar_todos_documentos(db)
+    return {"ok": True, "borrados": borrados}
 
 
 @app.delete("/cobros/{cobro_id}")
