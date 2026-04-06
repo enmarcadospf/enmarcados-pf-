@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session
 
 from backend.config import get_settings
 from backend.crud import (
+    listar_tarifas,
     buscar_documentos,
     actualizar_cobro,
     actualizar_documento,
     eliminar_cobro,
     eliminar_documento,
+    eliminar_tarifa,
+    eliminar_todas_tarifas,
     listar_clientes,
     listar_documentos,
     crear_cobro,
@@ -19,7 +22,9 @@ from backend.crud import (
     obtener_cliente_por_nombre,
     obtener_documento,
     obtener_documento_por_numero,
+    obtener_tarifa_por_codigo,
     upsert_cliente,
+    upsert_tarifa,
 )
 from backend.database import Base, engine, get_db
 from backend.schemas import (
@@ -30,6 +35,7 @@ from backend.schemas import (
     DocumentoUpdateIn,
     OrdenDetalleIn,
     OrdenIn,
+    TarifaIn,
 )
 
 
@@ -46,6 +52,17 @@ def serializar_cliente(cliente):
         "telefono": cliente.telefono,
         "rnc": cliente.rnc,
         "direccion": cliente.direccion,
+    }
+
+
+def serializar_tarifa(tarifa):
+    if not tarifa:
+        return None
+    return {
+        "codigo": tarifa.codigo,
+        "nombre": tarifa.nombre,
+        "precio": tarifa.precio,
+        "extra": tarifa.extra,
     }
 
 
@@ -150,6 +167,19 @@ def get_clientes(db: Session = Depends(get_db)):
     return [serializar_cliente(item) for item in listar_clientes(db)]
 
 
+@app.get("/tarifas")
+def get_tarifas(db: Session = Depends(get_db)):
+    return [serializar_tarifa(item) for item in listar_tarifas(db)]
+
+
+@app.get("/tarifas/{codigo}")
+def get_tarifa(codigo: int, db: Session = Depends(get_db)):
+    tarifa = obtener_tarifa_por_codigo(db, codigo)
+    if not tarifa:
+        return {"error": "Tarifa no encontrada"}
+    return serializar_tarifa(tarifa)
+
+
 @app.get("/clientes/by-name/{nombre}")
 def get_cliente_by_name(nombre: str, db: Session = Depends(get_db)):
     cliente = obtener_cliente_por_nombre(db, nombre)
@@ -162,6 +192,12 @@ def get_cliente_by_name(nombre: str, db: Session = Depends(get_db)):
 def post_cliente(payload: ClienteIn, db: Session = Depends(get_db)):
     cliente = upsert_cliente(db, payload.nombre, payload.telefono, payload.rnc, payload.direccion)
     return serializar_cliente(cliente)
+
+
+@app.post("/tarifas")
+def post_tarifa(payload: TarifaIn, db: Session = Depends(get_db)):
+    tarifa = upsert_tarifa(db, payload.codigo, payload.nombre, payload.precio, payload.extra)
+    return serializar_tarifa(tarifa)
 
 
 @app.get("/documentos")
@@ -245,6 +281,18 @@ def delete_documento(documento_id: int, db: Session = Depends(get_db)):
 def delete_cobro(cobro_id: int, db: Session = Depends(get_db)):
     ok = eliminar_cobro(db, cobro_id)
     return {"ok": ok}
+
+
+@app.delete("/tarifas/{codigo}")
+def delete_tarifa(codigo: int, db: Session = Depends(get_db)):
+    ok = eliminar_tarifa(db, codigo)
+    return {"ok": ok}
+
+
+@app.delete("/tarifas")
+def delete_todas_tarifas(db: Session = Depends(get_db)):
+    borradas = eliminar_todas_tarifas(db)
+    return {"ok": True, "borradas": borradas}
 
 
 @app.post("/admin/create-tables")

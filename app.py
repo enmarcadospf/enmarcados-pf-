@@ -1339,6 +1339,14 @@ def borrar_todos_los_clientes():
 # TARIFAS
 # =========================
 def guardar_tarifa_db(codigo, nombre, precio, extra):
+    if usar_backend_nube():
+        api_post_json("/tarifas", {
+            "codigo": int(codigo),
+            "nombre": nombre,
+            "precio": float(precio),
+            "extra": float(extra),
+        })
+        return
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1469,6 +1477,18 @@ def importar_tarifas_desde_txt(ruta_archivo="tarifas.txt"):
 
 
 def obtener_tarifa_por_codigo(codigo):
+    if usar_backend_nube():
+        try:
+            data = api_get_json(f"/tarifas/{int(codigo)}")
+            if data and not data.get("error"):
+                return (
+                    data.get("codigo"),
+                    data.get("nombre"),
+                    data.get("precio", 0),
+                    data.get("extra", 0),
+                )
+        except Exception:
+            pass
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1482,6 +1502,9 @@ def obtener_tarifa_por_codigo(codigo):
 
 
 def eliminar_tarifa_por_codigo(codigo):
+    if usar_backend_nube():
+        data = api_delete_json(f"/tarifas/{int(codigo)}")
+        return 1 if data and data.get("ok") else 0
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM tarifas WHERE codigo = ?", (codigo,))
@@ -1492,6 +1515,21 @@ def eliminar_tarifa_por_codigo(codigo):
 
 
 def obtener_todas_tarifas():
+    if usar_backend_nube():
+        try:
+            data = api_get_json("/tarifas")
+            if isinstance(data, list):
+                return [
+                    (
+                        item.get("codigo"),
+                        item.get("nombre"),
+                        item.get("precio", 0),
+                        item.get("extra", 0),
+                    )
+                    for item in data
+                ]
+        except Exception:
+            pass
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1526,6 +1564,9 @@ def obtener_todos_los_documentos(filtro=""):
     return filas
 
 def borrar_todas_las_tarifas():
+    if usar_backend_nube():
+        api_delete_json("/tarifas")
+        return
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM tarifas")

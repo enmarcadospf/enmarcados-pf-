@@ -16,6 +16,15 @@ class Cliente(Base):
     documentos: Mapped[list["Documento"]] = relationship(back_populates="cliente")
 
 
+class Tarifa(Base):
+    __tablename__ = "tarifas"
+
+    codigo: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    nombre: Mapped[str] = mapped_column(Text)
+    precio: Mapped[float] = mapped_column(Float, default=0)
+    extra: Mapped[float] = mapped_column(Float, default=0)
+
+
 class Documento(Base):
     __tablename__ = "documentos"
 

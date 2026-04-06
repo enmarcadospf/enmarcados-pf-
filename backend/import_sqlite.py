@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from backend.database import Base
-from backend.models import Cliente, Cobro, Documento, Orden, OrdenDetalle
+from backend.models import Cliente, Cobro, Documento, Orden, OrdenDetalle, Tarifa
 
 
 def importar(sqlite_path: str, postgres_url: str) -> None:
@@ -32,6 +32,22 @@ def importar(sqlite_path: str, postgres_url: str) -> None:
             )
             session.add(cliente)
             clientes_map[cliente.id] = cliente
+
+        for row in sqlite_conn.execute(
+            """
+            SELECT codigo, nombre, precio, extra
+            FROM tarifas
+            ORDER BY codigo
+            """
+        ):
+            session.add(
+                Tarifa(
+                    codigo=row["codigo"],
+                    nombre=row["nombre"],
+                    precio=row["precio"] or 0,
+                    extra=row["extra"] or 0,
+                )
+            )
 
         for row in sqlite_conn.execute(
             """

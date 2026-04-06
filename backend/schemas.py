@@ -12,6 +12,13 @@ class ClienteOut(BaseModel):
         from_attributes = True
 
 
+class TarifaIn(BaseModel):
+    codigo: int
+    nombre: str
+    precio: float
+    extra: float = 0
+
+
 class DocumentoResumenOut(BaseModel):
     id: int
     tipo: str

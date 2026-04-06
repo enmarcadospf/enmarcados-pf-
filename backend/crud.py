@@ -9,6 +9,16 @@ def listar_clientes(db: Session):
     return db.scalars(stmt).all()
 
 
+def listar_tarifas(db: Session):
+    stmt = select(models.Tarifa).order_by(models.Tarifa.codigo.asc())
+    return db.scalars(stmt).all()
+
+
+def obtener_tarifa_por_codigo(db: Session, codigo: int):
+    stmt = select(models.Tarifa).where(models.Tarifa.codigo == codigo)
+    return db.scalars(stmt).first()
+
+
 def obtener_cliente_por_nombre(db: Session, nombre: str):
     stmt = select(models.Cliente).where(models.Cliente.nombre == nombre)
     return db.scalars(stmt).first()
@@ -87,6 +97,20 @@ def upsert_cliente(db: Session, nombre: str, telefono: str | None, rnc: str | No
     db.commit()
     db.refresh(cliente)
     return cliente
+
+
+def upsert_tarifa(db: Session, codigo: int, nombre: str, precio: float, extra: float = 0):
+    tarifa = obtener_tarifa_por_codigo(db, codigo)
+    if tarifa:
+        tarifa.nombre = nombre
+        tarifa.precio = precio
+        tarifa.extra = extra
+    else:
+        tarifa = models.Tarifa(codigo=codigo, nombre=nombre, precio=precio, extra=extra)
+        db.add(tarifa)
+    db.commit()
+    db.refresh(tarifa)
+    return tarifa
 
 
 def siguiente_numero_documento(db: Session, tipo: str) -> int:
@@ -180,3 +204,18 @@ def eliminar_cobro(db: Session, cobro_id: int) -> bool:
     db.delete(cobro)
     db.commit()
     return True
+
+
+def eliminar_tarifa(db: Session, codigo: int) -> bool:
+    tarifa = db.get(models.Tarifa, codigo)
+    if not tarifa:
+        return False
+    db.delete(tarifa)
+    db.commit()
+    return True
+
+
+def eliminar_todas_tarifas(db: Session) -> int:
+    borradas = db.query(models.Tarifa).delete()
+    db.commit()
+    return borradas
