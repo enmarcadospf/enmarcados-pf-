@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: enmarcados-pf-api
+    env: python
+    plan: starter
+    buildCommand: pip install -r backend_requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_NAME
+        value: Enmarcados PF API
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: "false"
+      - key: CORS_ORIGINS
+        value: "*"
