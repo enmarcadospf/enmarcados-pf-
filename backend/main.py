@@ -1,5 +1,6 @@
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from backend.config import get_settings
@@ -122,6 +123,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def manejar_error_general(request: Request, exc: Exception):
+    detalle = str(exc)
+    if settings.app_env == "production":
+        detalle = "Internal Server Error"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": detalle,
+            "path": str(request.url.path),
+            "type": exc.__class__.__name__,
+        },
+    )
 
 
 @app.get("/health")
