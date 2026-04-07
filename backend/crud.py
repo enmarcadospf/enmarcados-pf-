@@ -113,6 +113,55 @@ def obtener_documento_por_numero(db: Session, numero_doc: int):
     return db.scalars(stmt).first()
 
 
+def obtener_orden(db: Session, orden_id: int):
+    stmt = (
+        select(models.Orden)
+        .where(models.Orden.id == orden_id)
+        .options(
+            selectinload(models.Orden.detalles),
+            selectinload(models.Orden.documento).selectinload(models.Documento.cobros),
+        )
+    )
+    return db.scalars(stmt).first()
+
+
+def _resolver_descuento(subtotal: float, descuento_valor: float):
+    descuento_valor = max(0.0, float(descuento_valor or 0))
+    if descuento_valor <= 100:
+        descuento_pct = descuento_valor
+        descuento_monto = subtotal * (descuento_pct / 100.0)
+    else:
+        descuento_monto = min(subtotal, descuento_valor)
+        descuento_pct = (descuento_monto / subtotal * 100.0) if subtotal else 0.0
+    return descuento_pct, descuento_monto
+
+
+def recalcular_documento_desde_ordenes(db: Session, documento_id: int):
+    documento = obtener_documento(db, documento_id)
+    if not documento:
+        return None
+
+    subtotal = sum(float(orden.total_orden or 0) for orden in documento.ordenes)
+    descuento_pct, descuento_monto = _resolver_descuento(subtotal, documento.descuento or 0)
+    base_imponible = max(0.0, subtotal - descuento_monto)
+    itbis = base_imponible * 0.18
+    total_final = base_imponible + itbis
+
+    documento.subtotal = subtotal
+    documento.descuento = descuento_pct
+    documento.itbis = itbis
+    documento.total_final = total_final
+
+    acumulado = sum(float(cobro.monto or 0) for cobro in documento.cobros)
+    pagado_total = acumulado >= total_final and total_final > 0
+    for cobro in documento.cobros:
+        cobro.pagado_total = pagado_total
+
+    db.commit()
+    db.refresh(documento)
+    return documento
+
+
 def upsert_cliente(db: Session, nombre: str, telefono: str | None, rnc: str | None, direccion: str | None):
     cliente = obtener_cliente_por_nombre(db, nombre)
     if cliente:
@@ -198,6 +247,54 @@ def crear_detalle_orden(db: Session, **payload):
     db.commit()
     db.refresh(detalle)
     return detalle
+
+
+def actualizar_orden(db: Session, orden_id: int, **campos):
+    orden = obtener_orden(db, orden_id)
+    if not orden:
+        return None
+
+    for clave in ("a_enmarcar", "notas", "ancho", "largo", "total_orden"):
+        if clave in campos and campos[clave] is not None and hasattr(orden, clave):
+            setattr(orden, clave, campos[clave])
+
+    detalles = campos.get("detalles")
+    if detalles is not None:
+        for detalle in list(orden.detalles):
+            db.delete(detalle)
+        db.flush()
+        for item in detalles:
+            _sync_sequence(db, "orden_detalles")
+            db.add(
+                models.OrdenDetalle(
+                    orden_id=orden.id,
+                    cantidad=item["cantidad"],
+                    codigo_material=item["codigo_material"],
+                    descripcion_material=item["descripcion_material"],
+                    ancho=item["ancho"],
+                    largo=item["largo"],
+                    pies=item["pies"],
+                    precio=item["precio"],
+                    subtotal=item["subtotal"],
+                    total=item["total"],
+                )
+            )
+
+    db.commit()
+    db.refresh(orden)
+    recalcular_documento_desde_ordenes(db, orden.documento_id)
+    return obtener_orden(db, orden_id)
+
+
+def eliminar_orden(db: Session, orden_id: int) -> bool:
+    orden = obtener_orden(db, orden_id)
+    if not orden:
+        return False
+    documento_id = orden.documento_id
+    db.delete(orden)
+    db.commit()
+    recalcular_documento_desde_ordenes(db, documento_id)
+    return True
 
 
 def crear_cobro(db: Session, **payload):

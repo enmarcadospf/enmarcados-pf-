@@ -85,6 +85,27 @@ class OrdenDetalleIn(BaseModel):
     total: float
 
 
+class OrdenDetallePayload(BaseModel):
+    cantidad: float
+    codigo_material: int
+    descripcion_material: str
+    ancho: float
+    largo: float
+    pies: float
+    precio: float
+    subtotal: float
+    total: float
+
+
+class OrdenUpdateIn(BaseModel):
+    a_enmarcar: str
+    notas: str = ""
+    ancho: float = 0
+    largo: float = 0
+    total_orden: float = 0
+    detalles: list[OrdenDetallePayload] = []
+
+
 class CobroIn(BaseModel):
     documento_id: int
     numero_doc: int

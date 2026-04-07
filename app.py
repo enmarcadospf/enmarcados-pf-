@@ -3,6 +3,7 @@ import re
 import unicodedata
 import calendar as pycalendar
 from datetime import datetime
+import tkinter as tk
 import customtkinter as ctk
 from tkinter import messagebox, ttk
 from reportlab.lib.pagesizes import letter
@@ -98,6 +99,9 @@ REFERENCIA_COBRO_AUTO = "Abono factura"
 DEFAULT_API_BASE_URL = "https://web-production-e749b.up.railway.app"
 DATA_MODE = os.getenv("DATA_MODE", "cloud").strip().lower()
 API_BASE_URL = os.getenv("API_BASE_URL", DEFAULT_API_BASE_URL).rstrip("/")
+CLIENTES_CACHE = None
+TARIFAS_CACHE = None
+DOCUMENTOS_CACHE = None
 
 
 def contexto_ssl_app():
@@ -109,6 +113,71 @@ def contexto_ssl_app():
     return ssl.create_default_context()
 
 
+def invalidar_cache(tipo=None):
+    global CLIENTES_CACHE, TARIFAS_CACHE, DOCUMENTOS_CACHE
+    if tipo in (None, "clientes"):
+        CLIENTES_CACHE = None
+    if tipo in (None, "tarifas"):
+        TARIFAS_CACHE = None
+    if tipo in (None, "documentos"):
+        DOCUMENTOS_CACHE = None
+
+
+def recargar_clientes_cache():
+    global CLIENTES_CACHE
+    if not usar_backend_nube():
+        return []
+    data = api_get_json("/clientes")
+    if isinstance(data, list):
+        CLIENTES_CACHE = [
+            (
+                item.get("id"),
+                item.get("nombre"),
+                item.get("telefono"),
+                item.get("rnc"),
+                item.get("direccion"),
+            )
+            for item in data
+        ]
+        CLIENTES_CACHE.sort(key=lambda fila: (fila[1] or "").lower())
+        return list(CLIENTES_CACHE)
+    CLIENTES_CACHE = []
+    return []
+
+
+def recargar_tarifas_cache():
+    global TARIFAS_CACHE
+    if not usar_backend_nube():
+        return []
+    data = api_get_json("/tarifas")
+    if isinstance(data, list):
+        TARIFAS_CACHE = [
+            (
+                item.get("codigo"),
+                item.get("nombre"),
+                item.get("precio", 0),
+                item.get("extra", 0),
+            )
+            for item in data
+        ]
+        TARIFAS_CACHE.sort(key=lambda fila: ((fila[1] or "").lower(), fila[0] or 0))
+        return list(TARIFAS_CACHE)
+    TARIFAS_CACHE = []
+    return []
+
+
+def recargar_documentos_cache():
+    global DOCUMENTOS_CACHE
+    if not usar_backend_nube():
+        return []
+    data = api_get_json("/documentos", params={"limit": 5000})
+    if isinstance(data, list):
+        DOCUMENTOS_CACHE = data
+        return list(DOCUMENTOS_CACHE)
+    DOCUMENTOS_CACHE = []
+    return []
+
+
 # =========================
 # UTILIDADES
 # =========================
@@ -117,6 +186,48 @@ def limpiar_nombre_archivo(texto: str) -> str:
     texto = re.sub(r"[^\w\s-]", "", texto).strip()
     texto = re.sub(r"[-\s]+", "_", texto)
     return texto[:60] if texto else "SIN_NOMBRE"
+
+
+def seleccionar_todo_widget(widget):
+    try:
+        if isinstance(widget, tk.Text):
+            widget.tag_add("sel", "1.0", "end-1c")
+            widget.mark_set("insert", "1.0")
+            widget.see("insert")
+        else:
+            widget.selection_range(0, "end")
+            widget.icursor("end")
+        return "break"
+    except Exception:
+        return None
+
+
+def mostrar_menu_contextual(widget, x_root, y_root):
+    try:
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="Cortar", command=lambda: widget.event_generate("<<Cut>>"))
+        menu.add_command(label="Copiar", command=lambda: widget.event_generate("<<Copy>>"))
+        menu.add_command(label="Pegar", command=lambda: widget.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(label="Seleccionar todo", command=lambda: seleccionar_todo_widget(widget))
+        menu.tk_popup(x_root, y_root)
+    finally:
+        try:
+            menu.grab_release()
+        except Exception:
+            pass
+
+
+def habilitar_copiar_pegar(widget):
+    widget.bind("<Control-c>", lambda e: e.widget.event_generate("<<Copy>>") or "break")
+    widget.bind("<Control-C>", lambda e: e.widget.event_generate("<<Copy>>") or "break")
+    widget.bind("<Control-v>", lambda e: e.widget.event_generate("<<Paste>>") or "break")
+    widget.bind("<Control-V>", lambda e: e.widget.event_generate("<<Paste>>") or "break")
+    widget.bind("<Control-x>", lambda e: e.widget.event_generate("<<Cut>>") or "break")
+    widget.bind("<Control-X>", lambda e: e.widget.event_generate("<<Cut>>") or "break")
+    widget.bind("<Control-a>", lambda e: seleccionar_todo_widget(e.widget))
+    widget.bind("<Control-A>", lambda e: seleccionar_todo_widget(e.widget))
+    widget.bind("<Button-3>", lambda e: (mostrar_menu_contextual(e.widget, e.x_root, e.y_root), "break")[1])
 
 
 def usar_backend_nube():
@@ -711,6 +822,63 @@ def obtener_ordenes_completas_de_documento(documento_id):
     return ordenes
 
 
+def obtener_orden_por_id(orden_id):
+    global DOCUMENTOS_CACHE
+    if usar_backend_nube():
+        docs = DOCUMENTOS_CACHE if DOCUMENTOS_CACHE is not None else recargar_documentos_cache()
+        for doc in docs or []:
+            for orden in doc.get("ordenes", []):
+                if orden.get("id") == orden_id:
+                    return {
+                        "id": orden.get("id"),
+                        "documento_id": doc.get("id"),
+                        "a_enmarcar": orden.get("a_enmarcar"),
+                        "notas": orden.get("notas") or "",
+                        "ancho": orden.get("ancho", 0),
+                        "largo": orden.get("largo", 0),
+                        "total_orden": orden.get("total_orden", 0),
+                        "detalles": [
+                            (
+                                item.get("cantidad", 0),
+                                item.get("codigo_material"),
+                                item.get("descripcion_material"),
+                                item.get("ancho", 0),
+                                item.get("largo", 0),
+                                item.get("pies", 0),
+                                item.get("precio", 0),
+                                item.get("subtotal", 0),
+                                item.get("total", 0),
+                            )
+                            for item in orden.get("detalles", [])
+                        ],
+                    }
+        data = api_get_json("/documentos", params={"limit": 5000}) or []
+        DOCUMENTOS_CACHE = data
+        return obtener_orden_por_id(orden_id)
+
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, documento_id, a_enmarcar, COALESCE(notas, ''), ancho, largo, total_orden
+        FROM ordenes
+        WHERE id = ?
+    """, (orden_id,))
+    fila = cur.fetchone()
+    conn.close()
+    if not fila:
+        return None
+    return {
+        "id": fila[0],
+        "documento_id": fila[1],
+        "a_enmarcar": fila[2],
+        "notas": fila[3] or "",
+        "ancho": fila[4],
+        "largo": fila[5],
+        "total_orden": fila[6],
+        "detalles": obtener_detalles_de_orden(orden_id),
+    }
+
+
 def obtener_cantidad_principal_orden(orden):
     detalles = orden.get("detalles") or []
     if detalles:
@@ -1219,6 +1387,7 @@ def guardar_cliente_db(nombre, telefono, rnc, direccion):
             "rnc": rnc,
             "direccion": direccion,
         })
+        recargar_clientes_cache()
         return data.get("id") if isinstance(data, dict) else None
     conn = conectar_db()
     cur = conn.cursor()
@@ -1260,19 +1429,9 @@ def obtener_cliente_por_nombre(nombre):
 
 def obtener_todos_clientes():
     if usar_backend_nube():
-        data = api_get_json("/clientes")
-        if isinstance(data, list):
-            return [
-                (
-                    item.get("id"),
-                    item.get("nombre"),
-                    item.get("telefono"),
-                    item.get("rnc"),
-                    item.get("direccion"),
-                )
-                for item in data
-            ]
-        return []
+        if CLIENTES_CACHE is None:
+            recargar_clientes_cache()
+        return list(CLIENTES_CACHE or [])
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1287,6 +1446,7 @@ def obtener_todos_clientes():
 def eliminar_cliente_por_nombre(nombre):
     if usar_backend_nube():
         data = api_delete_json(f"/clientes/by-name/{quote(nombre)}")
+        recargar_clientes_cache()
         return 1 if data and data.get("ok") else 0
     conn = conectar_db()
     cur = conn.cursor()
@@ -1302,6 +1462,7 @@ def borrar_todos_los_clientes():
         total = 0
         for _, nombre, _, _, _ in obtener_todos_clientes():
             total += eliminar_cliente_por_nombre(nombre)
+        recargar_clientes_cache()
         return total
     conn = conectar_db()
     cur = conn.cursor()
@@ -1399,6 +1560,7 @@ def guardar_tarifa_db(codigo, nombre, precio, extra):
             "precio": float(precio),
             "extra": float(extra),
         })
+        recargar_tarifas_cache()
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1555,6 +1717,7 @@ def obtener_tarifa_por_codigo(codigo):
 def eliminar_tarifa_por_codigo(codigo):
     if usar_backend_nube():
         data = api_delete_json(f"/tarifas/{int(codigo)}")
+        recargar_tarifas_cache()
         return 1 if data and data.get("ok") else 0
     conn = conectar_db()
     cur = conn.cursor()
@@ -1567,18 +1730,9 @@ def eliminar_tarifa_por_codigo(codigo):
 
 def obtener_todas_tarifas():
     if usar_backend_nube():
-        data = api_get_json("/tarifas")
-        if isinstance(data, list):
-            return [
-                (
-                    item.get("codigo"),
-                    item.get("nombre"),
-                    item.get("precio", 0),
-                    item.get("extra", 0),
-                )
-                for item in data
-            ]
-        return []
+        if TARIFAS_CACHE is None:
+            recargar_tarifas_cache()
+        return list(TARIFAS_CACHE or [])
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("""
@@ -1615,6 +1769,7 @@ def obtener_todos_los_documentos(filtro=""):
 def borrar_todas_las_tarifas():
     if usar_backend_nube():
         api_delete_json("/tarifas")
+        recargar_tarifas_cache()
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1646,6 +1801,7 @@ def crear_documento_db(tipo, cliente_id, fecha, fecha_entrega=""):
             "fecha": fecha,
             "fecha_entrega": fecha_entrega or "",
         })
+        recargar_documentos_cache()
         return data.get("id") if isinstance(data, dict) else None
     numero_doc = siguiente_numero_documento(tipo)
 
@@ -1747,24 +1903,33 @@ def obtener_documento_por_numero(numero_doc):
 
 def obtener_todos_los_documentos(filtro=""):
     if usar_backend_nube():
-        data = api_get_json("/documentos", params={"filtro": filtro, "limit": 300})
-        if isinstance(data, list):
-            filas = []
-            for item in data:
-                cliente = item.get("cliente") or {}
-                filas.append(
-                    (
-                        item.get("id"),
-                        item.get("tipo"),
-                        item.get("numero_doc"),
-                        cliente.get("nombre"),
-                        item.get("fecha"),
-                        item.get("total_final", 0),
-                        1 if item.get("cerrado") else 0,
-                    )
+        if DOCUMENTOS_CACHE is None:
+            recargar_documentos_cache()
+        filas = []
+        filtro_txt = (filtro or "").strip().lower()
+        for item in DOCUMENTOS_CACHE or []:
+            cliente = item.get("cliente") or {}
+            texto_busqueda = " ".join([
+                str(item.get("id") or ""),
+                str(item.get("tipo") or ""),
+                str(item.get("numero_doc") or ""),
+                str(cliente.get("nombre") or ""),
+                str(item.get("fecha") or ""),
+            ]).lower()
+            if filtro_txt and filtro_txt not in texto_busqueda:
+                continue
+            filas.append(
+                (
+                    item.get("id"),
+                    item.get("tipo"),
+                    item.get("numero_doc"),
+                    cliente.get("nombre"),
+                    item.get("fecha"),
+                    item.get("total_final", 0),
+                    1 if item.get("cerrado") else 0,
                 )
-            return filas
-        return []
+            )
+        return filas
     conn = conectar_db()
     cur = conn.cursor()
 
@@ -1790,6 +1955,7 @@ def obtener_todos_los_documentos(filtro=""):
 def cerrar_documento_db(documento_id):
     if usar_backend_nube():
         api_put_json(f"/documentos/{documento_id}", {"cerrado": True})
+        recargar_documentos_cache()
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1805,6 +1971,7 @@ def cerrar_documento_db(documento_id):
 def eliminar_documento_db(documento_id):
     if usar_backend_nube():
         data = api_delete_json(f"/documentos/{documento_id}")
+        recargar_documentos_cache()
         return 1 if isinstance(data, dict) and data.get("ok") else 0
     conn = conectar_db()
     cur = conn.cursor()
@@ -1854,6 +2021,7 @@ def eliminar_documento_db(documento_id):
 def actualizar_metodo_pago_documento(documento_id, metodo_pago):
     if usar_backend_nube():
         api_put_json(f"/documentos/{documento_id}", {"metodo_pago": normalizar_metodo_pago(metodo_pago)})
+        invalidar_cache("documentos")
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1865,6 +2033,7 @@ def actualizar_metodo_pago_documento(documento_id, metodo_pago):
 def actualizar_estado_retiro_documento(documento_id, retirado):
     if usar_backend_nube():
         api_put_json(f"/documentos/{documento_id}", {"retirado": bool(retirado)})
+        invalidar_cache("documentos")
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1876,6 +2045,7 @@ def actualizar_estado_retiro_documento(documento_id, retirado):
 def actualizar_fecha_entrega_documento(documento_id, fecha_entrega):
     if usar_backend_nube():
         api_put_json(f"/documentos/{documento_id}", {"fecha_entrega": (fecha_entrega or "").strip()})
+        invalidar_cache("documentos")
         return
     conn = conectar_db()
     cur = conn.cursor()
@@ -1965,6 +2135,7 @@ def sincronizar_cobro_automatico_facturacion(documento_id, fecha, monto, metodo_
                 })
         actualizar_metodo_pago_documento(documento_id, metodo_pago)
         recalcular_estado_cobros_documento(documento_id)
+        invalidar_cache("documentos")
         return
 
     conn = conectar_db()
@@ -2166,10 +2337,21 @@ def obtener_todos_los_cobros(filtro=""):
 
 def obtener_resumen_documentos_cobro(filtro=""):
     if usar_backend_nube():
-        docs = api_get_json("/documentos", params={"filtro": filtro, "limit": 300}) or []
+        if DOCUMENTOS_CACHE is None:
+            recargar_documentos_cache()
+        filtro_txt = (filtro or "").strip().lower()
         filas = []
-        for item in docs:
+        for item in DOCUMENTOS_CACHE or []:
             cliente = item.get("cliente") or {}
+            texto_busqueda = " ".join([
+                str(item.get("id") or ""),
+                str(item.get("numero_doc") or ""),
+                str(cliente.get("nombre") or ""),
+                str(item.get("fecha") or ""),
+                str(item.get("metodo_pago") or ""),
+            ]).lower()
+            if filtro_txt and filtro_txt not in texto_busqueda:
+                continue
             cobrado = sum(float(c.get("monto", 0) or 0) for c in item.get("cobros", []))
             filas.append((
                 item.get("id"),
@@ -2355,6 +2537,87 @@ def guardar_detalle_orden_db(
     conn.close()
 
 
+def actualizar_orden_db(orden_id, documento_id, a_enmarcar, notas, ancho, largo, total_orden, detalles):
+    if usar_backend_nube():
+        data = api_put_json(f"/ordenes/{orden_id}", {
+            "a_enmarcar": a_enmarcar,
+            "notas": notas or "",
+            "ancho": ancho,
+            "largo": largo,
+            "total_orden": total_orden,
+            "detalles": [
+                {
+                    "cantidad": detalle["cantidad"],
+                    "codigo_material": detalle["codigo_material"],
+                    "descripcion_material": detalle["descripcion_material"],
+                    "ancho": detalle["ancho"],
+                    "largo": detalle["largo"],
+                    "pies": detalle["pies"],
+                    "precio": detalle["precio"],
+                    "subtotal": detalle["subtotal"],
+                    "total": detalle["total"],
+                }
+                for detalle in detalles
+            ],
+        })
+        invalidar_cache("documentos")
+        return data
+
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE ordenes
+        SET a_enmarcar = ?, notas = ?, ancho = ?, largo = ?, total_orden = ?
+        WHERE id = ?
+    """, (a_enmarcar, notas or "", ancho, largo, total_orden, orden_id))
+    cur.execute("DELETE FROM orden_detalles WHERE orden_id = ?", (orden_id,))
+    for detalle in detalles:
+        cur.execute("""
+            INSERT INTO orden_detalles (
+                orden_id, cantidad, codigo_material, descripcion_material,
+                ancho, largo, pies, precio, subtotal, total
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            orden_id,
+            detalle["cantidad"],
+            detalle["codigo_material"],
+            detalle["descripcion_material"],
+            detalle["ancho"],
+            detalle["largo"],
+            detalle["pies"],
+            detalle["precio"],
+            detalle["subtotal"],
+            detalle["total"],
+        ))
+    conn.commit()
+    conn.close()
+    documento = obtener_documento(documento_id)
+    descuento = documento[10] if documento else 0
+    actualizar_totales_documento(documento_id, descuento)
+    return {"ok": True}
+
+
+def eliminar_orden_db(orden_id, documento_id):
+    if usar_backend_nube():
+        data = api_delete_json(f"/ordenes/{orden_id}")
+        invalidar_cache("documentos")
+        return 1 if isinstance(data, dict) and data.get("ok") else 0
+
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM orden_detalles WHERE orden_id = ?", (orden_id,))
+    cur.execute("DELETE FROM ordenes WHERE id = ?", (orden_id,))
+    cambios = cur.rowcount
+    conn.commit()
+    conn.close()
+    if cambios:
+        documento = obtener_documento(documento_id)
+        descuento = documento[10] if documento else 0
+        actualizar_totales_documento(documento_id, descuento)
+    return cambios
+
+
 def obtener_ordenes_de_documento(documento_id):
     conn = conectar_db()
     cur = conn.cursor()
@@ -2529,12 +2792,16 @@ class App(ctk.CTk):
 
     def recargar_actual(self):
         if self.pagina_actual == "clientes":
+            recargar_clientes_cache()
             self.pagina_clientes.cargar_lista_clientes(self.pagina_clientes.buscar_entry.get().strip())
         elif self.pagina_actual == "tarifas":
+            recargar_tarifas_cache()
             self.pagina_tarifas.cargar_lista_tarifas(self.pagina_tarifas.buscar_entry.get().strip())
         elif self.pagina_actual == "historial":
+            recargar_documentos_cache()
             self.pagina_historial.cargar_documentos(self.pagina_historial.buscar_entry.get().strip())
         elif self.pagina_actual == "cobros":
+            recargar_documentos_cache()
             self.pagina_cobros.cargar_cobros(self.pagina_cobros.buscar_entry.get().strip())
 
 # =========================
@@ -2648,6 +2915,9 @@ class PaginaClientes(ctk.CTkFrame):
         scroll_y = ttk.Scrollbar(lista_wrap, orient="vertical", command=self.lista_clientes.yview)
         scroll_y.grid(row=0, column=1, sticky="ns", padx=(0, 12), pady=12)
         self.lista_clientes.configure(yscrollcommand=scroll_y.set)
+
+        for widget in (self.nombre, self.telefono, self.rnc, self.direccion, self.buscar_entry):
+            habilitar_copiar_pegar(widget)
 
         self.cargar_lista_clientes()
 
@@ -3099,6 +3369,8 @@ class PaginaOrden(ctk.CTkFrame):
         super().__init__(app.content)
         self.app = app
         self.filas = []
+        self.orden_editando_id = None
+        self.documento_editando_id = None
 
         self.configure(fg_color="white")
 
@@ -3259,14 +3531,15 @@ class PaginaOrden(ctk.CTkFrame):
             command=self.recalcular_todo
         ).grid(row=1, column=0, padx=8, pady=10, sticky="ew")
 
-        ctk.CTkButton(
+        self.guardar_orden_btn = ctk.CTkButton(
             bottom,
             text="Pasar orden a facturación",
             fg_color="black",
             hover_color="#222222",
             text_color="white",
             command=self.pasar_orden_a_facturacion
-        ).grid(row=1, column=1, columnspan=3, padx=8, pady=10, sticky="ew")
+        )
+        self.guardar_orden_btn.grid(row=1, column=1, columnspan=3, padx=8, pady=10, sticky="ew")
 
         ctk.CTkButton(
             bottom,
@@ -3278,6 +3551,22 @@ class PaginaOrden(ctk.CTkFrame):
             border_color="black",
             command=self.limpiar_orden
         ).grid(row=1, column=4, padx=8, pady=10, sticky="ew")
+
+        for widget in (
+            self.cliente_entry,
+            self.telefono_entry,
+            self.rnc_entry,
+            self.fecha_entry,
+            self.a_enmarcar_entry,
+            self.notas_entry,
+            self.notas_texto,
+            self.total_orden_entry,
+        ):
+            habilitar_copiar_pegar(widget)
+
+        for fila in self.filas:
+            for entry in fila:
+                habilitar_copiar_pegar(entry)
 
     # ================= CLIENTES =================
     def get_nombres_clientes(self):
@@ -3481,6 +3770,9 @@ class PaginaOrden(ctk.CTkFrame):
 
     # ================= LIMPIEZA =================
     def limpiar_orden(self):
+        self.orden_editando_id = None
+        self.documento_editando_id = None
+        self.guardar_orden_btn.configure(text="Pasar orden a facturación")
         self.cliente_entry.set("")
         self.telefono_entry.delete(0, "end")
         self.rnc_entry.delete(0, "end")
@@ -3499,6 +3791,48 @@ class PaginaOrden(ctk.CTkFrame):
                     entry.configure(state="readonly")
                 else:
                     entry.delete(0, "end")
+
+    def cargar_orden_para_edicion(self, documento_id, orden_id):
+        orden = obtener_orden_por_id(orden_id)
+        documento = obtener_documento(documento_id)
+
+        if not orden or not documento:
+            messagebox.showerror("Error", "No se pudo cargar la orden seleccionada.")
+            return
+
+        self.limpiar_orden()
+        self.orden_editando_id = orden_id
+        self.documento_editando_id = documento_id
+        self.app.documento_actual_id = documento_id
+        self.guardar_orden_btn.configure(text="Guardar cambios de orden")
+
+        nombre = documento[4] or ""
+        telefono = documento[5] or ""
+        rnc = documento[6] or ""
+        fecha = documento[8] or fecha_hoy_str()
+
+        self.cliente_entry.set(nombre)
+        self.telefono_entry.insert(0, telefono)
+        self.rnc_entry.insert(0, rnc)
+        self.fecha_entry.delete(0, "end")
+        self.fecha_entry.insert(0, fecha)
+        self.a_enmarcar_entry.insert(0, orden.get("a_enmarcar") or "")
+        self.notas_entry.insert(0, orden.get("notas") or "")
+        self.notas_texto.delete("1.0", "end")
+        self.notas_texto.insert("1.0", orden.get("notas") or "")
+
+        for idx, detalle in enumerate(orden.get("detalles") or []):
+            if idx >= len(self.filas):
+                break
+            fila = self.filas[idx]
+            cantidad, codigo, _descripcion, ancho, largo, _pies, _precio, _subtotal, _total = detalle
+            fila[0].insert(0, str(cantidad))
+            fila[1].insert(0, str(codigo))
+            fila[3].insert(0, str(ancho))
+            fila[4].insert(0, str(largo))
+            self.calcular_fila(idx)
+
+        self.refrescar_total_orden()
 
     def recolectar_datos_orden(self):
         self.recalcular_todo()
@@ -3612,6 +3946,24 @@ class PaginaOrden(ctk.CTkFrame):
 
         try:
             datos_orden = self.recolectar_datos_orden()
+            if self.orden_editando_id and self.documento_editando_id:
+                actualizar_orden_db(
+                    self.orden_editando_id,
+                    self.documento_editando_id,
+                    datos_orden["a_enmarcar"],
+                    datos_orden.get("notas", ""),
+                    datos_orden["ancho"],
+                    datos_orden["largo"],
+                    datos_orden["total"],
+                    datos_orden["detalles"],
+                )
+                self.app.pagina_facturacion.cargar_documento_existente(self.documento_editando_id)
+                self.app.pagina_historial.cargar_documentos()
+                self.app.pagina_cobros.cargar_cobros()
+                self.app.ir_facturacion()
+                self.limpiar_orden()
+                messagebox.showinfo("Orden actualizada", "Los cambios de la orden se guardaron correctamente.")
+                return
             doc_id = self.asegurar_documento_desde_orden()
             self.app.pagina_facturacion.registrar_orden_desde_datos(datos_orden, actualizar_vista=True)
             ruta_factura, ruta_orden = exportar_documentos(doc_id)
@@ -4496,6 +4848,8 @@ class PaginaHistorial(ctk.CTkFrame):
         self.app = app
         self.documentos_map = {}
         self.doc_detalle_actual_id = None
+        self.orden_detalle_actual_id = None
+        self.ordenes_detalle_actuales = {}
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -4533,7 +4887,7 @@ class PaginaHistorial(ctk.CTkFrame):
 
         acciones_detalle = ctk.CTkFrame(detalle_wrap, fg_color="transparent")
         acciones_detalle.grid(row=0, column=0, padx=12, pady=(12, 8), sticky="ew")
-        for i in range(6):
+        for i in range(8):
             acciones_detalle.grid_columnconfigure(i, weight=1)
 
         self.abrir_detalle_btn = ctk.CTkButton(acciones_detalle, text="Abrir documento", command=self.abrir_documento_desde_detalle)
@@ -4559,6 +4913,31 @@ class PaginaHistorial(ctk.CTkFrame):
             command=self.eliminar_documento_historial
         )
         self.eliminar_btn.grid(row=0, column=5, padx=6, pady=4, sticky="ew")
+
+        self.selector_orden = ctk.CTkComboBox(
+            acciones_detalle,
+            values=[],
+            command=self.cambiar_orden_detalle,
+            state="readonly"
+        )
+        self.selector_orden.grid(row=1, column=0, columnspan=3, padx=6, pady=4, sticky="ew")
+        self.selector_orden.set("Selecciona una orden")
+
+        self.editar_orden_btn = ctk.CTkButton(
+            acciones_detalle,
+            text="Editar orden",
+            command=self.editar_orden_historial
+        )
+        self.editar_orden_btn.grid(row=1, column=3, padx=6, pady=4, sticky="ew")
+
+        self.eliminar_orden_btn = ctk.CTkButton(
+            acciones_detalle,
+            text="Eliminar orden",
+            fg_color="#D85B5B",
+            hover_color="#C14949",
+            command=self.eliminar_orden_historial
+        )
+        self.eliminar_orden_btn.grid(row=1, column=4, padx=6, pady=4, sticky="ew")
 
         self.detalle = ctk.CTkTextbox(detalle_wrap, height=260)
         self.detalle.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
@@ -4616,8 +4995,39 @@ class PaginaHistorial(ctk.CTkFrame):
             self.pdf_orden_btn,
             self.imprimir_orden_btn,
             self.eliminar_btn,
+            self.editar_orden_btn,
+            self.eliminar_orden_btn,
         ):
             boton.configure(state=estado)
+        self.selector_orden.configure(state="readonly" if habilitado and self.ordenes_detalle_actuales else "disabled")
+        if not self.ordenes_detalle_actuales:
+            self.editar_orden_btn.configure(state="disabled")
+            self.eliminar_orden_btn.configure(state="disabled")
+
+    def _texto_selector_orden(self, orden, indice):
+        titulo = (orden.get("a_enmarcar") or "Sin descripcion").strip()
+        return f"Orden {indice}: {titulo[:40]}"
+
+    def _cargar_selector_ordenes(self, ordenes):
+        self.ordenes_detalle_actuales = {}
+        opciones = []
+        for indice, orden in enumerate(ordenes, start=1):
+            etiqueta = self._texto_selector_orden(orden, indice)
+            self.ordenes_detalle_actuales[etiqueta] = orden
+            opciones.append(etiqueta)
+        self.selector_orden.configure(values=opciones, state="readonly" if opciones else "disabled")
+        if opciones:
+            self.selector_orden.set(opciones[0])
+            self.orden_detalle_actual_id = self.ordenes_detalle_actuales[opciones[0]].get("id")
+        else:
+            self.selector_orden.set("Sin órdenes")
+            self.orden_detalle_actual_id = None
+
+    def cambiar_orden_detalle(self, seleccion):
+        orden = self.ordenes_detalle_actuales.get(seleccion)
+        self.orden_detalle_actual_id = orden.get("id") if orden else None
+        if self.doc_detalle_actual_id:
+            self.mostrar_detalle_documento(self.doc_detalle_actual_id)
 
     def obtener_doc_id_seleccionado(self):
         doc_id_txt = self.id_entry.get().strip()
@@ -4647,10 +5057,27 @@ class PaginaHistorial(ctk.CTkFrame):
             messagebox.showerror("Error", str(exc))
             return
         self.doc_detalle_actual_id = doc_id
+        ordenes = obtener_ordenes_completas_de_documento(doc_id)
+        self._cargar_selector_ordenes(ordenes)
         self._set_acciones_detalle_habilitadas(True)
+        self.mostrar_detalle_documento(doc_id)
+
+    def mostrar_detalle_documento(self, doc_id):
+        documento = obtener_documento(doc_id)
+        if not documento:
+            return
 
         _, tipo, numero_doc, _, nombre, telefono, rnc, direccion, fecha, subtotal, descuento, itbis, total_final, cerrado, metodo_pago, retirado, fecha_entrega = documento
         ordenes = obtener_ordenes_completas_de_documento(doc_id)
+        orden_activa = None
+        if self.orden_detalle_actual_id:
+            for orden in ordenes:
+                if orden.get("id") == self.orden_detalle_actual_id:
+                    orden_activa = orden
+                    break
+        if orden_activa is None and ordenes:
+            orden_activa = ordenes[0]
+            self.orden_detalle_actual_id = orden_activa.get("id")
 
         lineas = [
             f"Tipo: {tipo}",
@@ -4668,15 +5095,17 @@ class PaginaHistorial(ctk.CTkFrame):
             "-" * 70,
         ]
 
-        for idx, orden in enumerate(ordenes, start=1):
+        if orden_activa:
             lineas.append(
-                f"{idx}. {orden['a_enmarcar']} | {orden['ancho']} x {orden['largo']} | Total: {orden['total_orden']:.2f}"
+                f"Orden seleccionada: {orden_activa['a_enmarcar']} | {orden_activa['ancho']} x {orden_activa['largo']} | Total: {orden_activa['total_orden']:.2f}"
             )
-            for detalle in orden["detalles"]:
+            for detalle in orden_activa["detalles"]:
                 cantidad, codigo, descripcion_material, ancho_d, largo_d, pies, precio, subtotal_d, total_d = detalle
                 lineas.append(
                     f"   - Cant: {cantidad} | Cod: {codigo} | {descripcion_material} | {ancho_d}x{largo_d} | Precio: {precio:.2f} | Total: {total_d:.2f}"
                 )
+        else:
+            lineas.append("Sin órdenes registradas en este documento.")
 
         lineas.extend([
             "",
@@ -4691,6 +5120,37 @@ class PaginaHistorial(ctk.CTkFrame):
         self.detalle.delete("1.0", "end")
         self.detalle.insert("end", "\n".join(lineas))
         self.detalle.configure(state="disabled")
+
+    def editar_orden_historial(self):
+        if not self.doc_detalle_actual_id or not self.orden_detalle_actual_id:
+            messagebox.showwarning("Aviso", "Primero selecciona una orden del documento.")
+            return
+        self.app.pagina_orden.cargar_orden_para_edicion(self.doc_detalle_actual_id, self.orden_detalle_actual_id)
+        self.app.ir_orden()
+
+    def eliminar_orden_historial(self):
+        if not self.doc_detalle_actual_id or not self.orden_detalle_actual_id:
+            messagebox.showwarning("Aviso", "Primero selecciona una orden del documento.")
+            return
+        orden = obtener_orden_por_id(self.orden_detalle_actual_id)
+        if not orden:
+            messagebox.showerror("Error", "La orden seleccionada ya no existe.")
+            return
+        confirmar = messagebox.askyesno(
+            "Confirmar eliminación",
+            f"¿Seguro que quieres eliminar esta orden?\n\n{orden.get('a_enmarcar') or 'Sin descripción'}"
+        )
+        if not confirmar:
+            return
+        cambios = eliminar_orden_db(self.orden_detalle_actual_id, self.doc_detalle_actual_id)
+        if not cambios:
+            messagebox.showerror("Error", "No se pudo eliminar la orden seleccionada.")
+            return
+        self.app.pagina_facturacion.cargar_documento_existente(self.doc_detalle_actual_id)
+        self.cargar_documentos(self.buscar_entry.get().strip())
+        self.ver_detalle()
+        self.app.pagina_cobros.cargar_cobros()
+        messagebox.showinfo("Orden eliminada", "La orden se eliminó correctamente.")
 
     def generar_pdf_documento_historial(self):
         try:

@@ -7,8 +7,10 @@ from backend.config import get_settings
 from backend.crud import (
     listar_tarifas,
     buscar_documentos,
+    actualizar_orden,
     actualizar_cobro,
     actualizar_documento,
+    eliminar_orden,
     eliminar_cobro,
     eliminar_documento,
     eliminar_todos_documentos,
@@ -37,6 +39,7 @@ from backend.schemas import (
     DocumentoUpdateIn,
     OrdenDetalleIn,
     OrdenIn,
+    OrdenUpdateIn,
     TarifaIn,
 )
 
@@ -256,6 +259,19 @@ def post_orden(payload: OrdenIn, db: Session = Depends(get_db)):
         payload.total_orden,
     )
     return serializar_orden(orden, incluir_detalles=False)
+
+
+@app.put("/ordenes/{orden_id}")
+def put_orden(orden_id: int, payload: OrdenUpdateIn, db: Session = Depends(get_db)):
+    orden = actualizar_orden(db, orden_id, **payload.model_dump())
+    if not orden:
+        return {"error": "Orden no encontrada"}
+    return serializar_orden(orden, incluir_detalles=True)
+
+
+@app.delete("/ordenes/{orden_id}")
+def delete_orden(orden_id: int, db: Session = Depends(get_db)):
+    return {"ok": eliminar_orden(db, orden_id)}
 
 
 @app.post("/orden-detalles")
